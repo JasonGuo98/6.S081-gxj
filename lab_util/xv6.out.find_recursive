@@ -1,0 +1,15 @@
+
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+init: starting sh
+$ mkdir t00kFMpx
+$ echo > t00kFMpx/zTvVlZpM
+$ mkdir t00kFMpx/03Vg7BIb
+$ echo > t00kFMpx/03Vg7BIb/zTvVlZpM
+$ mkdir TzDnhV0Q
+$ echo > TzDnhV0Q/zTvVlZpM
+$ find . zTvVlZpM
+exec find failed
+$ qemu-system-riscv64: terminating on signal 15 from pid 22770 (make)
