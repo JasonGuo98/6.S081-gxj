@@ -16,26 +16,32 @@ main(int argc, char *argv[])
     pipe(p);
     if(fork() == 0)
     {
+      //child
         close(0);
         pid = getpid();
-        len = write(p[1], msg, sizeof(msg));
         len = read(p[0], msg, sizeof(msg));
-        fprintf(1, "%d: received pong\n",pid);
+        if(1 != len)
+          exit(1);
+        fprintf(1, "%d: received ping\n",pid);
         len = write(p[1], msg, sizeof(msg));
+        if(1 != len)
+          exit(1);
         close(p[0]);
         close(p[1]);
         exit(0);
     }
     else
     {
+      //parent
         close(0);
         pid = getpid();
-        len = read(p[0], msg, sizeof(msg));
-        if(len!=1)
-            exit(0);
-        fprintf(1, "%d: received ping\n",pid);
         len = write(p[1], msg, sizeof(msg));
+        if(1 != len)
+          exit(1);
         len = read(p[0], msg, sizeof(msg));
+        if(1 != len)
+          exit(1);
+        fprintf(1, "%d: received pong\n",pid);
         close(p[0]);
         close(p[1]);
         exit(0);
