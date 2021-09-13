@@ -22,7 +22,8 @@ main(int argc, char *argv[])
         len = read(p[0], msg, sizeof(msg));
         if(1 != len)
           exit(1);
-        fprintf(1, "%d: received ping\n",pid);
+        fprintf(1, "%d: received p%cng\n",pid,msg[0]);
+	msg[0] = 'o';
         len = write(p[1], msg, sizeof(msg));
         if(1 != len)
           exit(1);
@@ -35,13 +36,14 @@ main(int argc, char *argv[])
       //parent
         close(0);
         pid = getpid();
+	msg[0] = 'i';
         len = write(p[1], msg, sizeof(msg));
         if(1 != len)
           exit(1);
         len = read(p[0], msg, sizeof(msg));
         if(1 != len)
           exit(1);
-        fprintf(1, "%d: received pong\n",pid);
+        fprintf(1, "%d: received p%cng\n",pid,msg[0]);
         close(p[0]);
         close(p[1]);
         exit(0);
