@@ -20,7 +20,7 @@ main(int argc, char *argv[])
     int write_fd[2]; // for root process, only write
     int i,first = 1;;
     if(argc != 1){
-    fprintf(2, "Usage: primes\n");
+        fprintf(2, "Usage: primes\n");
         exit(1);
     }
     // pipe(read_fd);
