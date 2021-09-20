@@ -3,3 +3,5 @@
 /*/*/*.asm
 /*/*/*.sym
 /*/*/_*
+.vscode
+/*/.vscode
