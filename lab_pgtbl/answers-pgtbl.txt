@@ -1,0 +1,3 @@
+my answer:
+1. yes, for some IO syscalls, shared page can accelerate them, e.g. sys_read;
+2. These PTEs are mapped IO devices, and user process stack, and trampoline code.

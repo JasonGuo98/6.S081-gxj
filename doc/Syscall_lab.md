@@ -5,7 +5,7 @@
 1. XV6 book Chapter 2 and Section 4.3 and 4.4
     1. Section `2.6` start xv6
        1. **boot loader**：当RISC-V的CPU上电时，它初始化其自身，并从一个ROM中读取一个`boot loader`。`boot loader`将xv6的kernel加载到内存，接下来在`machine mode`，CPU将从`kernel/entry.S:7, _entry`运行kernel。此时的虚拟页是没有启动的，虚拟内存和物理内存直接映射。`boot loader`将kernel放到物理内存的`0x80000000`位置。将内核不放到`0x0`的位置是因为在`0x0:0x80000000`之间有很多`I/O`设备。
-       2. **_entry**：`_entry`初始化一个栈，之后xv6就可以运行C代码了。xv6在文件`kernel/start.c`声明一个空间用于初始的栈`stack0`。在`_entry`中的代码为栈的寄存器写入`stack0+4096`，栈的顶部，这是因为在RISC-V中的栈是从上向下生长的。此时内核拥有了一个栈，`_entry`可以运行`kernel/start.c`中的C代码。
+       2. **_entry**：`_entry`初始化一个栈，之后xv6就可以运行C代码了,这个栈是一个字符串数组。xv6在文件`kernel/start.c`声明一个空间用于初始的栈`stack0`。在`_entry`中的代码为栈的寄存器写入`stack0+hartid*4096`，作为栈的顶部，这是因为在RISC-V中的栈是从上向下生长的。此时内核拥有了一个栈，`_entry`可以运行`kernel/start.c`中的C代码。
           > 这里的可以运行C代码是因为C的函数运行需要栈的支持【个人理解】。
           
           > 在多核CPU中，每个CPU都将运行`entry.S`，为了各个CPU的内存不重叠，其实分配的栈对每个CPU是不同的。
