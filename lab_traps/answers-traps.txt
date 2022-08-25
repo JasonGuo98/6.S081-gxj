@@ -1,0 +1,89 @@
+Q1: Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+
+A1: 函数的参数是由寄存器a0保存的，比如在f和g函数中，都是直接用a0=a0+3，进行计算的。在main函数中，调用printf时，两个参数的值分别是12 和13，由a1 和 a2分别保存。注意到编译器直接计算出了结果。
+
+Q2: Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+
+A2: 没有调用两个函数的过程。函数的计算结果都被直接由编译器计算了。比如main中的f(8)+1，值就是12
+
+Q3: At what address is the function printf located?
+
+A3: 函数的地址在`0x0630`
+```asm
+0000000000000630 <printf>:
+
+void
+printf(const char *fmt, ...)
+{
+
+$在main中该函数调用由以下命令实现，调用的是printf
+34:600080e7          jalr1536(ra) # 630 <printf>$
+```
+
+注意到1536 = 0x600，而不是0x630，由当前的ra的值为`0x30 + 0x600`取址到printf
+
+
+Q4: What value is in the register ra just after the jalr to printf in main?
+
+A4: 我们需要理解`auipc`和`jalr`两条指令的作用以确认ra的值。
+
+```
+30:00000097          auipc ra,0x0
+34:600080e7          jalr 1536(ra) # 630 <printf>
+```
+
+简单来说：
+`auipc ra, 0x0` 的效果是`ra = pc + 0x0 << 12 = pc`
+
+JALR指令格式为：`JALR rd，offset(rs1)`
+`t = pc + 4;  pc = (x[rs1]+sext(offset)) & ~1;  x[rd]=t`
+
+`jalr 1536(ra)` 扩展为 `jalr ra, ra, 0x600`，如此操作后，寄存器值ra = pc+4 = 38。
+
+Q5: Run the following code.
+
+	unsigned int i = 0x00646c72;
+	printf("H%x Wo%s", 57616, &i);
+      
+What is the output? Here's an ASCII table that maps bytes to characters.
+The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+
+Here's a description of little- and big-endian and a more whimsical description.
+
+A5: 我们修改call.c添加以上两行代码，得到的输出为：`HE110 World`
+
+Q6: In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+
+	printf("x=%d y=%d", 3);
+
+A6: 这里的值应该会是默认上一次在寄存器`a2`中的值。我们进行如下实验。
+```
+int d = 2568;
+printf("x=%d y=%d", 3, d);
+printf("x=%d y=%d", 3);
+printf("x=%d y=%d", 3, 2*d);
+printf("x=%d y=%d", 3);
+```
+
+输出是：
+
+```
+x=3 y=2568
+x=3 y=1
+x=3 y=5136
+x=3 y=1
+```
+
+应该是printf函数内部对寄存器有操作，我们调整策略为使用内嵌汇编：
+
+```
+asm volatile(
+                "li a2, 4396;"
+    );
+printf("x=%d y=%d", 3);
+```
+
+获得输出:
+```
+x=3 y=4396
+```
