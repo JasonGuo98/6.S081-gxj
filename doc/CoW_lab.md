@@ -795,3 +795,206 @@ time: OK
 Score: 110/110
 ```
 
+## Chapter 5 Interrupts and device drivers
+
+> 虽然在lab开始没有让看这个章节，但是这一章的概念对完成lab很有帮助。
+
+一个驱动(driver)是操作系统管理一个特定设备的代码：它配置硬件设备，告知设备来执行操作，处理产生的中断，并与等待设备IO的进程进行交互。驱动代码坑你非常tricky，因为驱动代码与管理的设备会同时执行。此外，驱动必须理解设备的硬件接口，这一块可能非常复杂，并且缺乏文档。
+
+设备需要操作系统注意时，通常可以生成一个中断。内核的trap处理代码会意识到设备产生了中断，并调用对应的驱动处理程序。在xv6中，判断发生设备中断类型发生在`devintr()， kernel/trap.c:177`中。
+
+很多设备的驱动通过两个上下文进行代码执行：上半部分在进程的内核线程执行，下半部分在中断时间执行。上半部分通过系统调用，如`read`和`write`这种希望设备执行I/O的系统调用执行。这部分代码可能请求硬件启动一个操作（比如，请求磁盘读取一个块）；接下来代码等待操作完成。最终，设备完成操作，并上抛一个中断。驱动的中断处理程序，作为驱动程序的后半部分，首先确定是什么操作被完成了，如果合适则唤醒一个等待的进程，并告知硬件启动正在等待的接下来的操作。
+
+### 5.1 Code: Console input
+
+控制台驱动程序 (kernel/console.c) 是驱动程序结构的简单说明。控制台驱动程序通过连接到RISC-V的`UART`串口硬件，接收人类输入的字符。控制台驱动每次累积一行输入，处理退格和control-u等特殊输入字符。用户进程，如shell，使用`read`系统调用从`console`中获取一行的输入。当你在QEMU中向xv6进行输入，您的击键通过 QEMU 的模拟 UART 硬件传送到 xv6。
+
+与驱动设备沟通的UART硬件是QEMU模拟的`16550`芯片。在真实的计算机中，一个`16550`能够管理一个连接到终端或其他电脑的`RS232`串行链路。当运行QEMU时，这个`RS232`连接到你的键盘和屏幕。
+
+UART硬件在软件层面看来是一个`memory-mapped`控制寄存器集合。换句话说，有一些RISC-V硬件连接到UART设备的物理地址，因此loads和stores能够与设备硬件交互，而不仅仅是内存。`memory-mapped`地址中，用于UART的从`0x10000000`，或者`UART0(kernel/memlayout.h:21)`。有几个 UART 控制寄存器，每个寄存器都有一个字节的宽度。它们相对`UART0`的偏移量在`kernel/uart.c`中定义。例如，`LSR`寄存器保存，指示输入的字符是否正在等待软件读取的，bit。这些字符（如果有）可用于从 RHR 寄存器中读取。每读取一个字符时，UART硬件将其从等待字符的内部FIFO中删除，并当FIFO为空后，从`LSR`清空`ready`bit。UART发送硬件很大程度上独立于接收硬件；如果软件写入一个字节到`THR`寄存器，`UART`会传输这一字节。
+
+xv6的main函数调用`concoleinit, kernel/concole.c`来初始化UART硬件。这些代码配置UART为在接收到每个字符时，生成接收中断，并在每次UART完成发送输出字节时，传输一个完成中断。
+
+XV6的Shell通过`init.c (user/init.c)`打开的文件描述符从控制台读取字符。对read系统调用的调用通过内核到达`consoleread, kernel/console.c`。
+
+```
+  // in fileread(), 通过以下代码调用到`consoleread`
+  
+  if(f->type == FD_DEVICE){
+    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].read)
+      return -1;
+    r = devsw[f->major].read(1, addr, n);
+  }
+
+  // consoleread
+  // user read()s from the console go here.$
+  // copy (up to) a whole input line to dst.$
+  // user_dist indicates whether dst is a user$
+  // or kernel address.$
+  //$
+  int$
+  consoleread(int user_dst, uint64 dst, int n)
+```
+`consoleread`等待输入到达（通过中断），并在cons.buf中缓冲，将输入复制到用户空间，并（在整行到达后）返回到用户进程。如果用户没有输入一个完整的行，任何进程都会等待在`sleep`系统调用中。（Chapter 7 解释了sleep的细节）
+
+当用户输入一个字符后，UART硬件请求RISC-V产生一个中断，激活xv6的trap处理程序。trap处理程序调用`devintr(), kernel/trap.c`，它会查询`RISC-V`的scause寄存器，来发现中断来自外部设备。接下里它会请求硬件调用`PLIC, kernel/trap.c:186`来告诉中断发生在哪个硬件。如果是`UART`，`devintr`调用`uartintr`。
+
+```
+  //in devintr()
+
+    // irq indicates which device interrupted.
+    int irq = plic_claim();
+
+    if(irq == UART0_IRQ){
+      uartintr();
+    }
+```
+
+
+`uartintr(), kernel/uart.c`从UART硬件中读取任何等待输入的字符，并将它们交给`consoleintr(), kernel/console.c`；它不会为字符等待，因为未来的输入能产生新的中断（由新的中断处理）。`consoleintr`的任务是累计输入字符到`cons.buf`中，直到一整行输入到达。`consoleintr`将退格键和一些其他字符进行特殊处理。当新的行到达，`consoleintr`唤醒等待的`consoleread`（如果有）。
+
+一旦被唤醒，`consoleread`会在`cons.buf`中观察到完整的一行，并将这一行复制到用户空间，然后（通过系统调用的形式）返回到用户空间。
+
+### data structure
+
+要想理解输入输出的逻辑，一个快速的方法是看看它们的数据结构。
+
+1. `struct cons`
+
+  ```
+  struct {
+    struct spinlock lock;
+    
+    // input
+  #define INPUT_BUF 128
+    char buf[INPUT_BUF];
+    uint r;  // Read index
+    uint w;  // Write index
+    uint e;  // Edit index
+  } cons;
+  ```
+
+  `struct cons`是UART读写的数据结构，其中有锁、环形buffer、读写修改指针。
+
+2. `uart`
+   
+    ```
+    // the transmit output buffer.
+    struct spinlock uart_tx_lock;
+    #define UART_TX_BUF_SIZE 32
+    char uart_tx_buf[UART_TX_BUF_SIZE];
+    uint64 uart_tx_w; // write next to uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE]
+    uint64 uart_tx_r; // read next from uart_tx_buf[uart_tx_r % UART_TX_BUF_SIZE]
+    ```
+
+    uart的tx数据结构。
+
+
+### 5.2 Code: Console output
+
+一个`write`系统调用对于连接到控制台的文件描述符的操作，最终会到达`uartputc, kernel/uart.c`。设备驱动程序会维护一个输出buffer(uart_tx_buf)，因此进程的写入不需要等待UART结束传输；相反，`uartputc`将每个字符添加到buffer的后方，调用`uartstart`来开始设备传输（如果还没有开始的话），并返回。`uartputc`唯一等待的情况是buffer已经满了。
+
+每次UART完成传输一个字节，其会产生一个中断。`uartintr`调用`uartstart`函数，该函数检查设备是否确实完成了发送，并将设备移动到下一个缓冲的字符。于是，如果一个进程写入了多个字符到控制台，通常第一个字节将通过`uartputc`对`uartstart`的调用发送，而接下来的buffer中的字节，当传输完成中断到达时，会由`uartintr`中的`uartstart`发送。
+
+需要注意的一个通用的模式是通过缓冲（buffer）和中断将设备活动与进程活动分离。控制台驱动能处理输入，即使没有任何进程等待这些输入；随后的读取能够看到这些输入。相似的，进程能够发送输出，而不需要等待设备。这样的解耦能够通过允许程序和设备I/O并发执行提升性能，当设备运行缓慢（如 UART）或需要立即注意（如回显键入的字符）时尤其重要。这一思想有时被称为I/O concurrency。
+
+这里做一下说明：
+
+当用户调用`write`之后，内核调用`uartstart()`进行字符发送，`uartstart()`函数一次只能传输一个字符，因此第一个字符传输后，write调用就结束了。
+
+剩余的字符如何传输呢？答案是`UART`的产生的中断会持续读取：
+
+```
+// handle a uart interrupt, raised because input has
+// arrived, or the uart is ready for more output, or
+// both. called from trap.c.
+void
+uartintr(void)
+{
+  // read and process incoming characters.
+  while(1){
+    int c = uartgetc();
+    if(c == -1)
+      break;
+    consoleintr(c);
+  }
+
+  // send buffered characters.
+  acquire(&uart_tx_lock);
+  uartstart();
+  release(&uart_tx_lock);
+}
+```
+
+就是说当`UART`能够进行输出时，会自动产生中断，从buffer中读取。
+
+### echo to user
+
+第一时间获取键盘输入的是设备，然后是内核，那么内核是如何将输入实时显示到用户态的shell的呢？
+
+```
+// send one character to the uart.
+// called by printf, and to echo input characters,
+// but not from write().
+//
+void consputc(int c){
+  if(c == BACKSPACE){
+    // if the user typed backspace, overwrite with a space.
+    uartputc_sync('\b'); uartputc_sync(' '); uartputc_sync('\b');
+  } else {
+    uartputc_sync(c);
+  }
+}
+```
+
+答案在上面这个函数中。`conputc`接收来自`uartgetc`的字符后，将字符使用`uartputc_sync`传输到`UART`中，最终发送到屏幕。整个过程`console`就像一个回音装置，因此这一个过程称为`echo`。
+
+### 5.3 Concurrency in drivers
+
+你可能已经注意到`acquire`在`consoleread`和`consoleintr`中被调用到了。这些调用会申请锁，在并发访问中保护控制台的驱动程序数据结构。其中有三个并发的危险：
+1. 两个不同的进程在不同的CPU上可能同时调用`consoleread`
+2. 当CPU已经在`consoleread`中执行时，硬件可能会要求CPU提供控制台（实际上是`UART`）中断；
+3. 硬件可能提交一个控制台中断到一个另外的CPU，但是此时`consoleread`已经在执行了。
+
+这些危险可能导致竞争条件（race conditions）或死锁（deadlocks）。第六章会探索这些问题，以及如何通过锁解决它们。
+
+在驱动中另一个需要关注到并发的点是，一个进程可能会等待设备的输入，但是当中断信号到达时，可能是不同的进程在执行。这使得中断处理程序不被允许考虑被中断的进程或代码。例如，一个中断处理程序不能使用当前进程的页表安全地调用`copyout`。中断处理程序通常做的工作相对较少（例如，只需将输入数据复制到缓冲区），然后唤醒上半部分代码来完成其余工作。
+
+### 5.4 Timer interrupts
+
+Xv6 使用timer 中断来维护其时钟，并允许内核从计算型程序间切换。在`usertrap`和`kerneltrap`中的`yield`调用会造成进程切换。Timer中断来自和RISC-V CPU连接的时钟硬件。Xv6会对这个时钟硬件进行编程，以定期唤醒各个CPU。
+
+RISC-V请求timer中断在machine mode处理，而不是supervisor mode。RISC-V 的machine mode执行时不启用页表，并且带有一组单独的控制寄存器。因此在machine mode 直接运行普通的xv6内核代码是不切实际的。因此，xv6处理定时器中断与上述trap机制完全分开。
+
+在machine mode执行的代码是`start.c`，在`main()`之前，设置以接收时钟中断（kernel/start.c）。其工作的一部分就是对CLINT（core-local interruptor）硬件进行编程，以产生定期延迟的中断。另一部分的工作是设置一个暂存（scratch）区域，类似于trapframe，帮助timer中断处理程序保存寄存器和`CLINT`寄存器的地址。最后，`start`设置`mtvec`到`timervec`，并启用timer中断。
+
+一个时钟中断能够在任何时刻（无论是用户还是内核）代码执行时发生。内核无法在关键操作期间禁用定时器中断。因此timer中断处理程序必须完成工作的同时，保证不打扰中断的内核代码。中断处理程序基本的策略是让RISC-V产生一个"software interrupt"，并立即返回。RISC-V发送软件中断到内核时通过基础的trap机制，并且允许内核禁止它们。处理timer interrupt产生的software interrupt的代码保存在`devintr, kernel/trap.c:204`中。
+
+> 这一部分的代码实现在`timervec, kernel/kernelvec.S`
+> 
+> 在每次发生timer中断时，必将进入这一代码，以machine mode执行。但是进入后，会产生一个supervisor mode的软件中断，这一中断能在`kerneltrap`或`usertrap`中处理，或者被屏蔽。
+
+machime-mode 的timer中断处理程序是`timervec`。其保存少量的寄存器到由`start()`预备的`scratch`区域中，告知`CLINT`何时生成下一个timer interrupt，告知RISC-V产生一个software中断，恢复寄存器，然后返回。timer 中断处理程序中没有C代码。
+
+### Real world
+
+Xv6允许设备和timer中断在内核和用户态发生。Timer中断会强制一个线程通过timer中断处理程序进行切换(`yield`)，甚至在内核执行时也会切换。如果内核线程进行大量的计算，而不返回用户态的话，这样对内核线程进行公平的CPU时间切片是有用的。然而，内核代码需要注意，进程可能被挂起（由于定时器中断），然后在不同的CPU上恢复。这是xv6中一些复杂性的来源（参见第 6.6 节）。如果设备和时钟中断仅在用户态发生，内核可以变得更加简单。
+
+完全支持典型计算机上的所有设备是一项艰巨的工作，因为设备很多，设备有很多功能，而且设备和驱动程序之间的协议可能很复杂，文档也很差。在许多操作系统中，驱动程序比核心内核占用更多的代码。
+
+UART驱动通过读取UART控制寄存器，每次接收一个字节的数据；这样的模式被称为`programmed I/O`，因为是使用软件驱使数据移动。programmed I/O是简单的，但在高速率情况下非常慢。需要高速移动大量数据的设备通常使用直接内存访问 (DMA)。DMA硬件设备直接将到达的数据写入RAM中，并且从RAM读出数据。现代磁盘和网络设备都会使用DMA。一个用于DMA的驱动会在RAM中准备数据，然后使用单个写寄存器来告知设备处理准备好的数据。
+
+设备在无法预测什么时候需要注意，且并不频繁时，中断机制是有意义的。但是中断的CPU开销很高。因此，告诉设备，比如磁盘和网络控制器，使用了减少中断需求的技巧。
+
+1. 为一批次到达和发出的数据需求仅仅产生一个中断。
+2. 另一个技巧是驱动程序完全禁用中断，并定期检查设备以查看是否需要注意。这一技术被称为`polling`，轮询。
+   
+   Polling在设备操作非常快时有意义，但是如果设备大量时间是空闲的话则浪费了CPU时间。
+
+   一些驱动在polling和中断处理两种模式之间切换，取决于当前的设备负载。
+
+UART 驱动程序首先将传入的数据复制到内核中的缓冲区，然后再复制到用户空间。这在低数据速率下是有意义的，但这样的双重复制（double copy）会显着降低生成或消耗数据非常快的设备的性能。一些操作系统能够直接在用户空间缓冲区和设备硬件之间移动数据，通常使用DMA。
+
+如第1章所述，控制台对应用程序显示为常规文件描述符，应用程序使用read和write系统调用读取输入和写入输出。应用程序可能想要控制无法通过标准文件系统调用表达的设备能力（例如，在控制台驱动程序中启用/禁用行缓冲）。对于这种情况，Unix操作系统使用ioctl系统调用。
+
+计算机的某些用途要求系统必须在有限时间内做出响应。例如，在安全关键系统中，错过最后期限可能会导致灾难。 xv6 不适合硬实时设置。硬实时操作系统（hard real-time Operating system）往往是与应用程序链接的库，其方式允许进行分析以确定最坏情况的响应时间。xv6 也不适合【软实时程序（soft real-time application）】——偶尔错过截止日期是可以接受的。因为xv6的调度程序过于简单，并且xv6具有长时间禁用中断的内核代码路径。
